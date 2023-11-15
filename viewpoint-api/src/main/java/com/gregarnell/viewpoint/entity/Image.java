@@ -25,4 +25,5 @@ public class Image {
     LocalDate taken;
     String checksumMd5;
     String checksumSha;
+    Integer orientation;
 }

@@ -4,6 +4,8 @@ import com.drew.imaging.ImageMetadataReader;
 import com.drew.imaging.ImageProcessingException;
 import com.drew.metadata.Directory;
 import com.drew.metadata.Metadata;
+import com.drew.metadata.MetadataException;
+import com.drew.metadata.exif.ExifIFD0Directory;
 import com.drew.metadata.exif.ExifSubIFDDirectory;
 import com.gregarnell.viewpoint.ViewpointProperties;
 import com.gregarnell.viewpoint.entity.Image;
@@ -100,36 +102,54 @@ public class ImageRestController {
     }
 
     @GetMapping("makethumb")
-    public void thumb() throws IOException, ImageProcessingException, NoSuchAlgorithmException {
+    public void thumb() throws IOException, ImageProcessingException, NoSuchAlgorithmException, MetadataException {
         imageRepo.deleteAll();
         List<File> files = Stream.of(new File(viewpointProperties.getImagesRoot()).listFiles())
                 .filter(file -> !file.isDirectory())
                 .toList();
 
         for (File file : files) {
-            BufferedImage orig = ImageIO.read(file);
-            if (orig == null) {
+            BufferedImage src = ImageIO.read(file);
+            if (src == null) {
                 System.out.println(file.getName());
                 continue;
             }
             Metadata metadata = ImageMetadataReader.readMetadata(new FileInputStream(file));
-            BufferedImage resized = Scalr.resize(orig, 800);
+            Image image = new Image();
+
+            ExifIFD0Directory firstDirectoryOfType = metadata.getFirstDirectoryOfType(ExifIFD0Directory.class);
+            if (firstDirectoryOfType != null && firstDirectoryOfType.containsTag(ExifIFD0Directory.TAG_ORIENTATION)) {
+                int orientation = firstDirectoryOfType.getInt(ExifIFD0Directory.TAG_ORIENTATION);
+                image.setOrientation(orientation);
+                Scalr.Rotation rotation = switch (orientation) {
+                    case 6 -> // Right side, top (Rotate 90 CW)
+                            Scalr.Rotation.CW_90;
+                    case 3 -> // Bottom, right side (Rotate 180)
+                            Scalr.Rotation.CW_180;
+                    case 8 -> // Left side, bottom (Rotate 270 CW)
+                            Scalr.Rotation.CW_270;
+                    default -> null;
+                };
+                if (rotation != null) {
+                    src = Scalr.rotate(src, rotation, Scalr.OP_ANTIALIAS);
+                }
+            }
+            BufferedImage resized = Scalr.resize(src, 800);
             File outputFile = new File(viewpointProperties.getImagesRoot() + "/thumb/" + file.getName());
 
             FileUtils.createParentDirectories(outputFile);
             Pair<String, String> checksum = checksum(file);
 
             ImageIO.write(resized, "jpg", outputFile);
-            Image image = new Image();
             image.setChecksumMd5(checksum.getLeft());
             image.setChecksumSha(checksum.getRight());
             image.setName(file.getName());
             image.setPath(file.getAbsolutePath());
             image.setThumbPath(viewpointProperties.getImagesRoot() + "/thumb/" + file.getName());
-            image.setWidth(orig.getWidth());
-            image.setHeight(orig.getHeight());
-            image.setRatio(BigDecimal.valueOf(orig.getWidth()).setScale(2, RoundingMode.HALF_UP)
-                    .divide(BigDecimal.valueOf(orig.getHeight()), RoundingMode.HALF_UP));
+            image.setWidth(src.getWidth());
+            image.setHeight(src.getHeight());
+            image.setRatio(BigDecimal.valueOf(src.getWidth()).setScale(2, RoundingMode.HALF_UP)
+                    .divide(BigDecimal.valueOf(src.getHeight()), RoundingMode.HALF_UP));
             Directory directory = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class);
             Date date = directory.getDate(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL);
             image.setTaken(date.toInstant()
@@ -138,6 +158,17 @@ public class ImageRestController {
             imageRepo.save(image);
         }
         segmentize();
+    }
+
+    @GetMapping("test")
+    public void testSingle(@RequestParam("filePath") String filePath) throws IOException, ImageProcessingException {
+        File file = new File(filePath);
+        Metadata metadata = ImageMetadataReader.readMetadata(new FileInputStream(file));
+        BufferedImage orig = ImageIO.read(file);
+        BufferedImage resized = Scalr.resize(orig, 800);
+        File outputFile = new File(viewpointProperties.getImagesRoot() + "/test/" + file.getName());
+        ImageIO.write(resized, "jpg", outputFile);
+        metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class).getString(ExifSubIFDDirectory.TAG_SCENE_TYPE);
     }
 
     private Pair<String, String> checksum(File file) throws NoSuchAlgorithmException {
